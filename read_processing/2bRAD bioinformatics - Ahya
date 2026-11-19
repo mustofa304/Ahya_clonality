@@ -1,0 +1,357 @@
+##### PROCESS RAW READ ######
+#============================
+
+#copy the raw file from /project/ckenkel_26/ckenkel/AdibCarlyMariaSophiaLib_Apr2024 to /scratch1/mustofa/bam_ahya
+#gunzip the file in each folder: I have 2 folders called read1 and read2
+#submit this following command as a job
+
+gzip -d read1/*.gz
+gzip -d read2/*.gz
+
+#Trim and deduplicate the reads
+#test trimming and deduplication in one sample
+#ask for allocation for interactive node [alternative] or submit as a job
+#salloc --ntasks=1 --cpus-per-task=8 --time=03:00:00 --mem=16GB -p epyc-64
+
+module load gcc/12.3.0
+module load perl/5.38.0
+
+# Note - we use the trim2bRAD_2barcodes_dedup_NoDegen.pl script as we found different patterns in the first 4-6 base sequences in our reads maybe due to different seq platform, in this case (Next Seq), we usually use the trim2bRAD_2barcodes_dedup_N2.pl script that has 6/8 recognized-bases of 5-ILL 
+
+trim2bRAD_2barcodes_dedup_NoDegen.pl input=Ahy9_S55_L001_R1_001.fastq site=".\{12\}CGA.\{6\}TGC.\{12\}|.\{12\}GCA.\{6\}TCG.\{12\}" adaptor="AGATC?" sampleID=100 deduplicate=1 bc=[ATGC]\{4\} minBCcount=5000
+
+#Run the \trim2bRAD_2barcodes_dedup_NoDegen.pl\ for all samples by submitting them as a job by generating this (then modify them so that it is excutable)
+
+ls -1 *.fastq | cut -d'.' -f1 > ID
+for i in `cat ./ID`; do echo trim2bRAD_2barcodes_dedup_NoDegen.pl input=$i.fastq site=\"\.{12}CGA\.{6}TGC\.{12}\|\.{12}GCA\.{6}TCG\.{12}\" adaptor=\"AGATC?\" sampleID=100 deduplicate=1 bc=[ATGC]{4} minBCcount=5000; done > ToDo.sh
+
+#create list of unique identifiers
+#Do this for read1 and read2 in each forlder
+
+ls -1 *.tr0 | cut -d'.' -f 1 | sort | uniq > ID 
+
+#Then, rename files based on adapter - need 2 column csv file, where 1st column is pool_adap notation and 2nd is actual sample name - create this and then import - be sure to dbl check that there's no weird line endings (ex: extra spaces) before proceeding!
+#Do not forget to rename the replicate differently!
+
+ls *tr0
+
+#I save it as mappingfile.csv
+#in spreadsheet match up sample names - note: be sure to add .tr0 to new filenames too. Save as a .csv
+
+head mappingfile.csv | cat -vet
+
+#note if there is weird ^M before newline - kill it with sed
+
+sed -e "s/^M//" mappingfile.csv > mappingfileclean.csv
+
+#or
+
+sed -i 's/\r$//' mappingfile.csv
+
+#Rename files using .csv 
+
+#make a list of command, then modify them as job (modify bash script mappingjob.sh using nano command so that it's excutable)
+
+awk -F',' '{print "cp "$1" ../tr0/"$2""}' mappingfile.csv  >>  mappingjob.sh
+
+#do this in each read directory
+
+sbatch mappingjob.sh 
+
+# if there is error like this when submitting job (sbatch: error: Batch script contains DOS line breaks (\\r\\n); sbatch: error: instead of expected UNIX line breaks (\\n)). convert to unix format by:
+
+dos2unix mappingjob.sh
+
+#concatenate read1 and read2
+#list unique ID in each read directory (read11 and read22 directory)
+
+ls -1 *.tr0 | awk -F '_' '{print $1}' | sort | uniq > ID2
+
+#cek the total number of sample in each directory (read11 and read2) -> they should be the same
+wc -l ID2
+
+#concatenate the read1 and read2; then modify concatenate.sh so that it is executable
+
+du -sh ahy*/Ahy10_S56_L001_R1_001_ACCA.tr0
+cat ID2 | sed 's/.tr0//g' | head
+cat ID2 | sed 's/.tr0//g' > ID2notr0
+
+for i in `cat ./ID2notr0`; do echo cat read*\/$i\.tr0 \> $i\.trim; done > concatenate.sh
+
+sbatch concatenate.sh
+
+
+#Concatenate Ahy Genome and Symbiont Genome (/project/ckenkel_26/RefSeqs/AhyaGenome_V1)
+#Ahya genome was downloaded from: https://www.ncbi.nlm.nih.gov/datasets/genome/GCA_020536085.1/ based on L\'f3pez-Nandam EH, Albright R, Hanson EA, Sheets EA, Palumbi SR. Mutations in coral soma and sperm imply lifelong stem cell renewal and cell lineage selection. Proc Biol Sci. 2023 Jan 25;290(1991):20221766. doi: 10.1098/rspb.2022.1766. Epub 2023 Jan 18. PMID: 36651044; PMCID: PMC9846893.
+
+cat Ahyacinthus.chrsV1.fasta ../symABCD_longref.fasta > Ahyacinthus.chrsV1_symABCD_longref.fasta
+
+########################################
+#Mapping .trim files to reference genome 
+########################################
+
+#Create a list of filenames and move everyone into subdirectories
+
+ls *trim | cut -d'.' -f 1 > ID
+
+#Find adaptors.fasta file in GitHub repository
+#run fastq_quality_filter, by making a list of command, and modifying them into excutable slurm job
+
+module load fastqc
+
+for i in `cat ./ID`; do echo fastq_quality_filter -q 20 -p 90 -i $i\.trim -o $i\.tr1; done > fastqfilter.sh #relaxed percent of reads mapping to increase retention of reads
+
+#This produec fastqfilter.sh file but is not excutable as a job. To make it excutable, copy this following code in the header of the file when nano-ing the file:
+
+nano fastqfilter.sh 
+#and copy this following in the header
+
+#!/bin/bash
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=05:00:00
+#SBATCH --mem=16GB
+#SBATCH --mail-type=END
+#SBATCH --mail-user=mustofa@usc.edu
+#SBATCH --error=%x_%j.err
+#SBATCH --output=%x_%j.out
+
+sbatch fastqfilter.sh
+
+#modify bbdukjob.sh so that it can be excutable
+
+for i in `cat ./ID`; do echo bbduk.sh in=$i\.tr1 out=$i\.clean ref=/project2/ckenkel_26/scripts/adaptors.fasta k=12 stats=stat.txt; done > bbdukjob.sh
+
+module spider jdk
+module load jdk #load jaqqva module
+
+#if doesn't work, use this:
+module load openjdk
+
+sbatch bbdukjob.sh
+
+#for bbduk_stat
+echo -e "Filename\tReads\tRead Percentage\tBases\tBase Percentage" > bbduk_stat.csv
+grep -E "in=.*\.tr1|Result:" bbdukjob.sh_*.err | awk -F'[:,=()]' '
+/in=/{file=$2} 
+/Result:/{print file "\t" $2 "\t" $3 "%" "\t" $4 "\t" $5 "%"}' >> bbduk_stat.csv
+
+
+#format ref genomecd
+#create environmental variables for long file paths
+
+#!/bin/bash
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=05:00:00
+#SBATCH --mem=16GB
+#SBATCH --mail-type=END
+#SBATCH --mail-user=mustofa@usc.edu
+#SBATCH --error=%x_%j.err
+#SBATCH --output=%x_%j.out
+
+GENOME_FASTA=/project2/ckenkel_26/RefSeqs/AhyaGenome_V1/ahyasym/Ahyacinthus.chrsV1_symABCD_longref.fasta
+bowtie2-build $GENOME_FASTA $GENOME_FASTA
+
+module load samtools
+samtools faidx $GENOME_FASTA
+
+#run above script in a slurm job: 1 hour more
+
+module spider bowtie2
+module load bowtie2
+sbatch genomefasta.sh
+
+export GENOME_FASTA=//project2/ckenkel_26/RefSeqs/AhyaGenome_V1/ahyasym/Ahyacinthus.chrsV1_symABCD_longref.fasta
+GENOME_FASTA=/project2/ckenkel_26/RefSeqs/AhyaGenome_V1/ahyasym/Ahyacinthus.chrsV1_symABCD_longref.fasta
+for i in `cat ./ID`; do echo bowtie2 --threads 16 --no-unal --score-min L,16,1 --local -L 16 -x \$GENOME_FASTA\ -U $i\.clean -S $i\bt2.sam; done > bowtie2job.sh
+
+#modify the bowtie2job.sh so that it is executable, make sure it has 16 cores of nodes, then
+sbatch bowtie2job.sh
+
+#I don't know what this script is: This is after running bowtie2
+>alignmentRates
+for F in `ls *trim1`; do
+M=`grep -E '^[ATGCN]+$' $F | wc -l | grep -f - bt2*.e* -A 4 | tail -1 | perl -pe 's/maps\.e\d+-|% overall alignment rate//g'` ;
+echo "$F.sam $M">>alignmentRates;
+done
+
+for F in `ls *clean`; do
+M=`grep -E '^[ATGCN]+$' $F | wc -l | grep -f - bowtie2job.sh_*.err -A 4 | tail -1` ;
+echo "$F.sam $M">>alignmentRates;
+done
+
+grep -E '^[ATGCN]+$' OR3-233.clean | wc -l | grep -f - bowtie2job.sh_332320.err -A 4 | tail -1
+
+grep -E '^[ATGCN]+$' SKH-116.trim1 | wc -l | grep -f - bt2_*.err -A 4 | tail -1 | perl -pe 's/maps\.e\d+-|% overall alignment rate//g'
+
+###This works
+
+log="bowtie2job.sh_12547651.err"
+
+printf "sample\talignment_rate\n"
+
+for f in *.clean; do
+    read_count=$(grep -c '^@' "$f")
+    alignment_rate=$(grep -F -A 4 -- "$read_count" "$log" | tail -n 1)
+    printf "%s\t%s\n" "$f" "$alignment_rate"
+done > alignment_rate.txt
+
+
+
+###############################################
+#counting the proportion of zooxanthellae types
+###############################################
+
+### zooxType.pl custom perl script is from Manzello et al, "Role of host genetics and heat tolerant algal symbionts in sustaining populations of the endangered coral Orbicella faveolata in the Florida Keys with ocean warming", Global Change Biology 2019, 25(3):1016-1031. doi: 10.1111/gcb.14545. 
+### Github link to zooxType.pl: https://github.com/z0on/ClonesAndClades_Ofav_Keys/blob/master/zooxType.pl
+
+# Change host= to be species-specific, in this case, I use "chr1". 
+# To find the hostname, head to either a .sam file or the genome.fasta file
+# Store in shell script (ex name: zoox.sh)
+
+zooxType.pl host= "chr1" symgenomes=20-23 > zooxCountsAhya.txt
+
+sbatch zoox.sh
+
+#this will result txt file called zooxCountAhya.txt that shows the proportion of symbiont types in each sample; you will use the last 4 columns to plot the stacked bar showing the proportion of symbiont using R \'97> see angsd_ibs_pca.R for plotting
+
+################################################################
+#Extracting host read alignments for downstream pop gen analyses 
+################################################################
+
+# (rewriting sam files omitting mappings to chr20-chr23) submit as a job - I called it omitchr20-23.job
+
+for S in `ls *bt2.sam`; do NNAME=`echo $S | sed 's/bt2\.sam/\host.sam/'`; echo $NNAME; egrep -v "chr20|chr21|chr22|chr23" $S >$NNAME; done
+
+#####################################################
+#Converting .sam to .bam files prior to running ANGSD 
+#####################################################
+
+#TRY in one sample and check whether this work.
+
+GENOME_FASTA=/scratch1/mustofa/AhyaGenome/Ahyacinthus.chrsV1.fasta
+
+samtools view -bt /scratch1/mustofa/AhyaGenome/Ahyacinthus.chrsV1.fasta SKH-99host.sam > unsorted.bam && samtools sort -o sorted.bam unsorted.bam && java -Xmx5g -jar $PICARD AddOrReplaceReadGroups INPUT=sorted.bam OUTPUT=SKH-99host.bam RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=SKH-99host&& samtools index SKH-99host.bam
+
+# If it works, use for loop to make a execution list for each sample
+# I use Maria samtools version as the one in the lab and Sibelle protocol did not work!
+
+
+for i in $(cat ./ID); do
+    echo "samtools view -bt \$GENOME_FASTA ${i}host.sam > unsorted.bam && samtools sort -o sorted.bam unsorted.bam && java -Xmx5g -jar \$PICARD AddOrReplaceReadGroups INPUT=sorted.bam OUTPUT=${i}.bam RGID=group1 RGLB=lib1 RGPL=illumina RGPU=unit1 RGSM=${i} && samtools index ${i}.bam"
+done > s2b.sh
+
+# So, I make a s2bMaria.sh for Maria version and modify them so that it is excutable, to modify them put this script as the header
+#!/bin/bash
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=1
+#SBATCH --time=10:00:00
+#SBATCH --mem=16GB
+#SBATCH --mail-type=END
+#SBATCH --mail-user=mustofa@usc.edu
+#SBATCH --error=%x_%j.err
+#SBATCH --output=%x_%j.out
+
+module load gcc
+module load intel
+module load openjdk
+module load picard
+module load samtools
+
+sbatch s2bMaria.sh
+
+#move each *.bam file to bamahya directory
+mkdir bamahya
+
+mv *.bam bamahya
+mv *.bai bamahya
+
+
+################################################### 
+Moving on to ANGSD 0.933
+###################################################
+
+# move bams and bam.bai to own directory
+
+# load in the following mods
+module load htslib
+module load zlib
+module load bzip2
+module load curl
+
+# make list of bam files; make sure sorted and unsorted bam file are not listed
+ls ahy*.bam > bams
+
+# check coverage
+
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -maxDepth 1910" #set max depth to 10x number of samples - I have 191 sample
+TODO="-doQsDist 1 -doDepth 1 -doCounts 1 -dumpCounts 2"
+
+angsd -b bams -r chr1 -GL 1 $FILTERS $TODO -P 1 -out dd
+
+#	-> Total number of sites analyzed: 2114
+#	-> Number of sites retained after filtering: 2113
+
+# summarizing results (using modified script by Matteo Fumagalli)
+
+module load r
+# downloaded Misha's modified plotQC.R script from github, this seems to give me the right output
+
+Rscript /project2/ckenkel_26/mruggeri/scripts2021/2bRAD/plotQC.R prefix=dd bams=bam_list > qranksAhya
+
+# move dd.pdf onto computer using sftp or carc on demand
+# ----- IBS with ANGSD 
+
+###############################################
+#RUN 1 - 80% sample with -hwe_pval 1e-5 
+#############################################
+
+# F I L T E R S :
+# (ALWAYS record your filter settings and explore different combinations to confirm that results are robust)
+# Suggested filters :
+# -snp_pval 1e-5 : high confidence that the SNP is not just sequencing error 
+# -minMaf 0.05 : only common SNPs, with allele frequency 0.05 or more.
+# set minInd to 75-80% of total number of samples: 80% of 237 is 189 (full data) and 80% of 211 is 168 (without outliers)
+# also adding  filters against very badly non-HWE sites (such as, all calls are heterozygotes => lumped paralog situation) and sites with really bad strand bias:
+# if you expect very highly differentiated populations with nearly fixed alternative alleles, remove '-hwe_pval 1e-5' form FILTERS
+
+# T O   D O : 
+# -GL 1 : samtools likelihood model
+# -doGlf 2 : output beagle format (for admixture)
+# -doGeno 8 : bgenotype likelihoods format for ngsLD
+# -makeMatrix 1 -doIBS 1 -doCov 1 : identity-by-state and covariance matrices based on single-read resampling (robust to variation in coverage across samples)
+
+
+module load htslib
+module load zlib
+module load bzip2
+module load curl
+
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 189 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doDepth 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+
+angsd -b bams -GL 1 $FILTERS $TODO -P 1 -out ahya2
+
+# how many SNPs?
+zcat ahya2.mafs.gz | wc -l
+
+#copy the *ibs.Mat and bams file and inspect on the iBS.R for outliers
+#remove outlier from bams file and rerun ANGSD
+
+
+module load htslib
+module load zlib
+module load bzip2
+module load curl
+
+FILTERS="-uniqueOnly 1 -remove_bads 1 -minMapQ 20 -minQ 25 -dosnpstat 1 -doHWE 1 -sb_pval 1e-5 -hetbias_pval 1e-5 -hwe_pval 1e-5 -skipTriallelic 1 -minInd 169 -snp_pval 1e-5 -minMaf 0.05"
+TODO="-doMajorMinor 1 -doMaf 1 -doCounts 1 -makeMatrix 1 -doDepth 1 -doIBS 1 -doCov 1 -doGeno 8 -doBcf 1 -doPost 1 -doGlf 2"
+
+angsd -b bams2nooutliers -GL 1 $FILTERS $TODO -P 1 -out ahya_bams211_noout
+
+
+# how many SNPs?
+zcat ahya_bams211_noout.mafs.gz | wc -l
+
+#inspect if there is outliers and assess the clones in 1_211bams_pt120.R
